@@ -134,7 +134,15 @@ start_demo() {
   export SSHGUARD_DEMO_PID_FILE="$DEMO_PID_FILE"
   export SSHGUARD_DEMO_CONFIG_FILE="$DEMO_CONFIG"
 
-  PYTHONPATH="$PROJECT_SRC" python3 <<'PY'
+  local PYTHON_CMD="python3"
+  local VENV_DIR="/opt/sshguard-dashboard/venv"
+  if [[ -f "$VENV_DIR/bin/python" ]]; then
+    PYTHON_CMD="$VENV_DIR/bin/python"
+  else
+    export PYTHONPATH="$PROJECT_SRC"
+  fi
+
+  "$PYTHON_CMD" <<'PY'
 import atexit
 import os
 
