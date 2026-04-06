@@ -6,6 +6,7 @@ from wtforms.validators import DataRequired, NumberRange
 import logging
 import secrets
 import ipaddress
+import os
 from queue import Queue, Empty, Full
 from threading import Lock
 import json
@@ -70,17 +71,41 @@ def broadcast_attack_event(failure: FailedAttempt) -> None:
 
 @app.before_request
 def validate_host_header():
-    host = request.headers.get('Host', '')
+    if os.getenv("SSHGUARD_ALLOW_ANY_HOST", "").lower() in {"1", "true", "yes"}:
+        return
 
-    allowed_patterns = [
+    host = request.headers.get('Host', '').strip()
+    if not host:
+        logger.warning("Rejected request with missing Host header")
+        abort(403)
+
+    host_base = host.split(':')[0].strip('[]').lower()
+
+    allowed_hosts = {
         '127.0.0.1',
         'localhost',
-    ]
-    host_base = host.split(':')[0]
+        '::1',
+    }
 
-    if host_base not in allowed_patterns:
-        logger.warning(f"Rejected request with invalid Host header: {host}")
-        abort(403)
+    extra_allowed = os.getenv("SSHGUARD_ALLOWED_HOSTS", "")
+    if extra_allowed:
+        allowed_hosts.update(
+            h.strip().strip('[]').lower()
+            for h in extra_allowed.split(',')
+            if h.strip()
+        )
+
+    if host_base in allowed_hosts:
+        return
+
+    try:
+        ipaddress.ip_address(host_base)
+        return
+    except ValueError:
+        pass
+
+    logger.warning(f"Rejected request with invalid Host header: {host}")
+    abort(403)
 
 
 @app.route('/')

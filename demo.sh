@@ -8,6 +8,8 @@ DEMO_LOG="$DEMO_DIR/auth.log"
 DEMO_CONFIG="$DEMO_DIR/config.json"
 DEMO_PID_FILE="$DEMO_DIR/demo.pid"
 DEMO_IP_DEFAULT="172.16.10.77"
+DEMO_BIND_HOST="${SSHGUARD_DEMO_HOST:-127.0.0.1}"
+DEMO_PORT="${SSHGUARD_DEMO_PORT:-5000}"
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -87,13 +89,6 @@ stop_services() {
     return
   fi
 
-  local cmdline
-  cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-  if [[ "$cmdline" != *"sshguard_dashboard"* ]] || [[ "$cmdline" != *"$PROJECT_SRC"* ]]; then
-    echo "PID $pid does not appear to be this demo process; refusing to kill" >&2
-    exit 1
-  fi
-
   kill "$pid" 2>/dev/null || true
 
   for _ in $(seq 1 20); do
@@ -111,12 +106,53 @@ stop_services() {
   echo "Stopped demo process (pid $pid)"
 }
 
+resolve_port_conflict() {
+  if ! fuser -n tcp "$DEMO_PORT" >/dev/null 2>&1; then
+    return
+  fi
+
+  local pids
+  pids="$(fuser -n tcp "$DEMO_PORT" 2>/dev/null || true)"
+  if [[ -z "${pids// }" ]]; then
+    return
+  fi
+
+  local pid
+  for pid in $pids; do
+    if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+      continue
+    fi
+
+    local cmdline
+    cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+
+    if [[ "$cmdline" == *"sshguard_dashboard"* ]] || [[ "$cmdline" == *"gunicorn"* ]]; then
+      echo "Stopping existing SSHGuard process on :$DEMO_PORT (pid $pid)"
+      kill "$pid" 2>/dev/null || true
+      for _ in $(seq 1 20); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+          break
+        fi
+        sleep 0.2
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    else
+      echo "Port :$DEMO_PORT is already in use by PID $pid" >&2
+      echo "Command: ${cmdline:-unknown}" >&2
+      echo "Use SSHGUARD_DEMO_PORT to pick another port, or stop that process first." >&2
+      exit 1
+    fi
+  done
+}
+
 start_demo() {
   need_cmd python3
   need_cmd fuser
-  need_cmd pkill
 
   remove_stale_pid
+  resolve_port_conflict
 
   if [[ -f "$DEMO_PID_FILE" ]]; then
     echo "Demo appears to already be running (pid: $(cat "$DEMO_PID_FILE"))."
@@ -126,20 +162,22 @@ start_demo() {
 
   setup_demo_files
 
-  echo "Starting SSHBlock demo on http://127.0.0.1:5000"
+  echo "Starting SSHBlock demo on $DEMO_BIND_HOST:$DEMO_PORT"
+  echo "Dashboard URL (local): http://127.0.0.1:$DEMO_PORT"
   echo "Config: $DEMO_CONFIG"
   echo "Log:    $DEMO_LOG"
   echo "PID:    $DEMO_PID_FILE"
 
   export SSHGUARD_DEMO_PID_FILE="$DEMO_PID_FILE"
   export SSHGUARD_DEMO_CONFIG_FILE="$DEMO_CONFIG"
+  export SSHGUARD_DEMO_BIND_HOST="$DEMO_BIND_HOST"
+  export SSHGUARD_DEMO_PORT="$DEMO_PORT"
+  export PYTHONPATH="$PROJECT_SRC${PYTHONPATH:+:$PYTHONPATH}"
 
   local PYTHON_CMD="python3"
   local VENV_DIR="/opt/sshguard-dashboard/venv"
   if [[ -f "$VENV_DIR/bin/python" ]]; then
     PYTHON_CMD="$VENV_DIR/bin/python"
-  else
-    export PYTHONPATH="$PROJECT_SRC"
   fi
 
   "$PYTHON_CMD" <<'PY'
@@ -176,7 +214,11 @@ web.threshold_tracker = d.threshold_tracker
 web.blocked_ip_store = d.blocked_ip_store
 web.set_daemon(d)
 d.start()
-web.run_server(host='127.0.0.1', port=5000, use_gevent=True)
+web.run_server(
+  host=os.environ.get("SSHGUARD_DEMO_BIND_HOST", "0.0.0.0"),
+  port=int(os.environ.get("SSHGUARD_DEMO_PORT", "5000")),
+  use_gevent=True,
+)
 PY
 }
 
@@ -220,26 +262,26 @@ status_demo() {
   need_cmd ss
 
   echo "== Listener =="
-  ss -ltnp | grep ':5000' || echo "No listener on :5000"
+  ss -ltnp | grep ":$DEMO_PORT" || echo "No listener on :$DEMO_PORT"
 
   echo
   echo "== API: blocked-ips =="
-  curl -s http://127.0.0.1:5000/api/blocked-ips | head || true
+  curl -s "http://127.0.0.1:$DEMO_PORT/api/blocked-ips" | head || true
 
   echo
   echo "== API: stats =="
-  curl -s http://127.0.0.1:5000/api/stats | head || true
+  curl -s "http://127.0.0.1:$DEMO_PORT/api/stats" | head || true
 
   echo
   echo "== API: stats/graph =="
-  curl -s http://127.0.0.1:5000/api/stats/graph | head || true
+  curl -s "http://127.0.0.1:$DEMO_PORT/api/stats/graph" | head || true
 }
 
 open_browser() {
   if command -v xdg-open >/dev/null 2>&1; then
-    xdg-open http://127.0.0.1:5000/ >/dev/null 2>&1 || true
+    xdg-open "http://127.0.0.1:$DEMO_PORT/" >/dev/null 2>&1 || true
   else
-    echo "Open this URL manually: http://127.0.0.1:5000/"
+    echo "Open this URL manually: http://127.0.0.1:$DEMO_PORT/"
   fi
 }
 
