@@ -69,10 +69,15 @@ def broadcast_attack_event(failure: FailedAttempt) -> None:
 
 @app.before_request
 def validate_host_header():
-    allowed_hosts = ['127.0.0.1', '127.0.0.1:5000', 'localhost', 'localhost:5000']
     host = request.headers.get('Host', '')
 
-    if host not in allowed_hosts:
+    allowed_patterns = [
+        '127.0.0.1',
+        'localhost',
+    ]
+    host_base = host.split(':')[0]
+
+    if host_base not in allowed_patterns:
         logger.warning(f"Rejected request with invalid Host header: {host}")
         abort(403)
 
