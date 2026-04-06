@@ -4,6 +4,12 @@ set -e
 # SSHBlock Dashboard Installation Script
 # Requires: Python 3.10+, systemd, iptables, root privileges
 
+APP_DIR="/opt/sshguard-dashboard"
+VENV_DIR="$APP_DIR/venv"
+PYTHON_BIN="$VENV_DIR/bin/python"
+PIP_BIN="$VENV_DIR/bin/pip"
+GUNICORN_BIN="$VENV_DIR/bin/gunicorn"
+
 echo "SSHBlock Dashboard Installer"
 echo "=============================="
 echo
@@ -42,12 +48,19 @@ if ! command -v iptables &> /dev/null; then
   exit 1
 fi
 
+if ! python3 -m venv "$VENV_DIR" >/dev/null 2>&1; then
+  echo "ERROR: python3-venv is not available"
+  echo "Install the venv package for your distribution, then rerun install.sh"
+  exit 1
+fi
+
 echo "✓ All prerequisites met"
 echo
 
 # Install Python package
-echo "Installing Python package..."
-pip3 install -e . || {
+echo "Installing Python package in virtual environment..."
+"$PYTHON_BIN" -m pip install --upgrade pip >/dev/null
+"$PIP_BIN" install . || {
   echo "ERROR: Failed to install Python package"
   exit 1
 }
@@ -102,9 +115,36 @@ fi
 echo
 
 # Install systemd service files
+rewrite_execstart() {
+  local file="$1"
+  local old_line="$2"
+  local new_line="$3"
+
+  python3 - "$file" "$old_line" "$new_line" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+old_line = sys.argv[2]
+new_line = sys.argv[3]
+text = path.read_text(encoding="utf-8")
+if old_line not in text:
+    raise SystemExit(f"Expected ExecStart pattern not found in {path}")
+path.write_text(text.replace(old_line, new_line, 1), encoding="utf-8")
+PY
+}
+
 echo "Installing systemd service files..."
 cp systemd/sshguard-dashboard.service /etc/systemd/system/
 cp systemd/sshguard-web.service /etc/systemd/system/
+rewrite_execstart \
+  /etc/systemd/system/sshguard-dashboard.service \
+  "/usr/bin/python3 -m sshguard_dashboard.daemon -c /etc/sshguard-dashboard/config.json" \
+  "$PYTHON_BIN -m sshguard_dashboard.daemon -c /etc/sshguard-dashboard/config.json"
+rewrite_execstart \
+  /etc/systemd/system/sshguard-web.service \
+  "/usr/bin/gunicorn --bind 127.0.0.1:5000 --worker-class gevent --workers 1 --log-file - sshguard_dashboard.web:app" \
+  "$GUNICORN_BIN --bind 127.0.0.1:5000 --worker-class gevent --workers 1 --log-file - sshguard_dashboard.web:app"
 chmod 644 /etc/systemd/system/sshguard-dashboard.service
 chmod 644 /etc/systemd/system/sshguard-web.service
 echo "✓ Service files installed"
@@ -138,6 +178,7 @@ echo
 echo "Documentation: /usr/share/doc/sshguard-dashboard/"
 echo "Configuration: /etc/sshguard-dashboard/config.json"
 echo "Data directory: /var/lib/sshguard-dashboard/"
+echo "Virtual environment: $VENV_DIR"
 echo
 echo "IMPORTANT: Add your management IP to the whitelist before enabling!"
 echo "Edit /etc/sshguard-dashboard/config.json and add your IP to the whitelist array."

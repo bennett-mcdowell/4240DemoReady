@@ -16,5 +16,8 @@ dependencies = [
     "click>=8.1.0",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0.0", "pytest-cov>=4.1.0"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sshguard_dashboard = ["templates/*.html"]
