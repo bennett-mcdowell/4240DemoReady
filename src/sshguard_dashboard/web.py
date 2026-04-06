@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 app.config['SECRET_KEY'] = secrets.token_hex(16)
+app.config['WTF_CSRF_METHODS'] = ['POST', 'PUT', 'PATCH', 'DELETE']
 
 csrf = CSRFProtect(app)
 
