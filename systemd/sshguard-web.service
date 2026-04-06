@@ -1,0 +1,28 @@
+[Unit]
+Description=SSHBlock Dashboard Web Server
+Documentation=file:///usr/share/doc/sshguard-dashboard/README.md
+After=network.target sshguard-dashboard.service
+Requires=sshguard-dashboard.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/gunicorn --bind 127.0.0.1:5000 --worker-class gevent --workers 1 --log-file - sshguard_dashboard.web:app
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Working directory
+WorkingDirectory=/var/lib/sshguard-dashboard
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target

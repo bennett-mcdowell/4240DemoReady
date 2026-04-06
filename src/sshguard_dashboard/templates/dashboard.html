@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>SSHBlock Dashboard</title>
+
+    <!-- Pico CSS via CDN -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+
+    <!-- HTMX for dynamic updates -->
+    <script src="https://unpkg.com/htmx.org@2.0.0"></script>
+
+    <!-- Chart.js for stats graph -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+
+    <style>
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 60% 40%;
+            gap: 32px; /* xl spacing */
+            margin-top: 48px; /* 2xl spacing after header */
+        }
+        .section {
+            margin-bottom: 32px; /* xl spacing between sections */
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px; /* xs, sm spacing */
+            border-radius: 4px;
+            font-size: 14px; /* label size */
+            font-weight: 600;
+        }
+        .badge-accent {
+            background: var(--pico-primary);
+            color: var(--pico-primary-inverse);
+        }
+        .empty-state {
+            text-align: center;
+            padding: 24px; /* lg spacing */
+            color: var(--pico-muted-color);
+        }
+        #attack-feed {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        #feed-table tbody tr:first-child {
+            animation: highlight 1s ease;
+        }
+        @keyframes highlight {
+            0% { background-color: var(--pico-primary-background); }
+            100% { background-color: transparent; }
+        }
+        #config-message p {
+            padding: 8px 16px;
+            border-radius: 4px;
+            margin: 0;
+        }
+        .unblock-btn {
+            padding: 4px 8px;
+            font-size: 14px;
+            background: var(--pico-primary);
+            color: var(--pico-primary-inverse);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .unblock-btn:hover {
+            opacity: 0.8;
+        }
+        #stats-chart {
+            max-height: 300px;
+        }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1>SSHBlock Dashboard</h1>
+            <div id="connection-status">
+                <span id="sse-status" class="badge badge-accent">Connecting...</span>
+            </div>
+        </header>
+
+        <div class="dashboard-grid">
+            <!-- Left column: Blocked IPs + Attack Feed -->
+            <div>
+                <section class="section">
+                    <h2>Blocked IPs</h2>
+                    <div id="blocked-ips-container"
+                         hx-get="/api/blocked-ips"
+                         hx-trigger="load, every 2s"
+                         hx-swap="innerHTML">
+                        <!-- Loaded via HTMX -->
+                        <div class="empty-state">
+                            <p><strong>Loading...</strong></p>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="section">
+                    <h2>Live Attack Feed</h2>
+                    <div id="attack-feed" style="max-height: 400px; overflow-y: auto;">
+                        <div id="feed-empty" class="empty-state">
+                            <p><strong>No recent attacks.</strong></p>
+                            <p>Feed will update when attacks are detected.</p>
+                        </div>
+                        <table id="feed-table" style="display: none;">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Source IP</th>
+                                    <th>Username</th>
+                                    <th>Type</th>
+                                </tr>
+                            </thead>
+                            <tbody id="feed-entries">
+                                <!-- Attack entries will be prepended here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Right column: Stats + Top Offenders + Config -->
+            <div>
+                <section class="section">
+                    <h2>Attack Statistics</h2>
+                    <canvas id="stats-chart" width="400" height="200"></canvas>
+                    <!-- Chart.js graph will go here in Plan 04 -->
+                </section>
+
+                <section class="section">
+                    <h2>Top Offenders</h2>
+                    <div id="top-offenders-container"
+                         hx-get="/api/stats"
+                         hx-trigger="load, every 3s"
+                         hx-swap="innerHTML">
+                        <!-- Loaded via HTMX -->
+                        <div class="empty-state">
+                            <p><strong>Loading...</strong></p>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="section">
+                    <h2>Configuration</h2>
+                    <form id="config-form" hx-post="/api/config" hx-swap="none">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                        <label for="threshold">
+                            Failure Threshold
+                            <input type="number" id="threshold" name="threshold"
+                                   min="1" max="100" required>
+                            <small>Number of failed attempts to trigger block (1-100)</small>
+                        </label>
+
+                        <label for="window_seconds">
+                            Time Window (seconds)
+                            <input type="number" id="window_seconds" name="window_seconds"
+                                   min="60" max="3600" required>
+                            <small>Time window for counting failures (60-3600 seconds)</small>
+                        </label>
+
+                        <button type="submit" id="config-save-btn">Save Configuration</button>
+
+                        <div id="config-message" style="margin-top: 16px; display: none;">
+                            <!-- Success/error messages appear here -->
+                        </div>
+                    </form>
+                </section>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Configure HTMX to include CSRF token in all requests
+        document.body.addEventListener('htmx:configRequest', function(evt) {
+            const token = document.querySelector('meta[name="csrf-token"]').content;
+            evt.detail.headers['X-CSRFToken'] = token;
+        });
+
+        // Config form handling
+        document.body.addEventListener('htmx:afterRequest', function(evt) {
+            if (evt.detail.target.id === 'config-form') {
+                const messageDiv = document.getElementById('config-message');
+
+                if (evt.detail.successful) {
+                    const response = JSON.parse(evt.detail.xhr.response);
+                    messageDiv.innerHTML = '<p style="color: var(--pico-primary);">' + response.message + '</p>';
+                    messageDiv.style.display = 'block';
+
+                    // Hide message after 5 seconds
+                    setTimeout(function() {
+                        messageDiv.style.display = 'none';
+                    }, 5000);
+                } else {
+                    const response = JSON.parse(evt.detail.xhr.response);
+                    let errorMsg = response.error || 'Failed to save configuration';
+                    if (response.details) {
+                        errorMsg += ': ' + Object.values(response.details).join(', ');
+                    }
+                    messageDiv.innerHTML = '<p style="color: var(--pico-contrast);">' + errorMsg + '</p>';
+                    messageDiv.style.display = 'block';
+                }
+            }
+        });
+
+        // Load config values on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            fetch('/api/config')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('threshold').value = data.threshold;
+                    document.getElementById('window_seconds').value = data.window_seconds;
+                })
+                .catch(error => {
+                    console.error('Failed to load config:', error);
+                });
+        });
+
+        // SSE connection for real-time attack feed
+        let eventSource = null;
+        let feedEntries = [];
+        const MAX_FEED_ENTRIES = 50;  // Keep last 50 attacks
+
+        function connectSSE() {
+            const statusBadge = document.getElementById('sse-status');
+            const feedEmpty = document.getElementById('feed-empty');
+            const feedTable = document.getElementById('feed-table');
+            const feedEntriesBody = document.getElementById('feed-entries');
+
+            // Create EventSource connection to /events
+            eventSource = new EventSource('/events');
+
+            eventSource.onopen = function() {
+                statusBadge.textContent = 'Live feed active';
+                statusBadge.className = 'badge badge-accent';
+                console.log('SSE connected');
+            };
+
+            eventSource.onmessage = function(event) {
+                try {
+                    console.log('SSE message received:', event.data);
+                    const data = JSON.parse(event.data);
+
+                    // Handle connection confirmation
+                    if (data.type === 'connected') {
+                        console.log('SSE connection confirmed');
+                        return;
+                    }
+
+                    // Add attack entry to feed
+                    const timestamp = new Date(data.timestamp).toLocaleTimeString();
+                    const entry = {
+                        timestamp: timestamp,
+                        source_ip: data.source_ip,
+                        username: data.username,
+                        pattern_type: data.pattern_type
+                    };
+
+                    console.log('Adding attack to feed:', entry);
+
+                    // Add to beginning of array
+                    feedEntries.unshift(entry);
+
+                    // Keep only last 50 entries
+                    if (feedEntries.length > MAX_FEED_ENTRIES) {
+                        feedEntries.pop();
+                    }
+
+                    // Update UI
+                    updateFeedDisplay();
+
+                    // Refresh graph shortly after incoming attack events.
+                    scheduleGraphRefresh();
+
+                } catch (e) {
+                    console.error('Failed to parse SSE message:', e, 'Raw data:', event.data);
+                }
+            };
+
+            eventSource.onerror = function(error) {
+                statusBadge.textContent = 'Live feed disconnected — attempting to reconnect...';
+                statusBadge.className = 'badge';
+                console.error('SSE error:', error);
+                console.log('SSE disconnected, will auto-reconnect');
+            };
+        }
+
+        function updateFeedDisplay() {
+            const feedEmpty = document.getElementById('feed-empty');
+            const feedTable = document.getElementById('feed-table');
+            const feedEntriesBody = document.getElementById('feed-entries');
+
+            if (feedEntries.length === 0) {
+                feedEmpty.style.display = 'block';
+                feedTable.style.display = 'none';
+            } else {
+                feedEmpty.style.display = 'none';
+                feedTable.style.display = 'table';
+
+                // Rebuild table rows
+                feedEntriesBody.innerHTML = feedEntries.map(entry => `
+                    <tr>
+                        <td>${entry.timestamp}</td>
+                        <td>${entry.source_ip}</td>
+                        <td>${entry.username}</td>
+                        <td>${entry.pattern_type.replace('_', ' ')}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        // Connect SSE on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            connectSSE();
+        });
+
+        // Chart.js graph for attack statistics
+        let statsChart = null;
+        let graphRefreshTimer = null;
+
+        function setGraphStatus(message) {
+            let statusEl = document.getElementById('stats-graph-status');
+            const chartEl = document.getElementById('stats-chart');
+
+            if (!chartEl || !chartEl.parentElement) {
+                return;
+            }
+
+            if (!statusEl) {
+                statusEl = document.createElement('small');
+                statusEl.id = 'stats-graph-status';
+                statusEl.style.display = 'block';
+                statusEl.style.marginTop = '8px';
+                chartEl.parentElement.appendChild(statusEl);
+            }
+
+            statusEl.textContent = message || '';
+            statusEl.style.color = message ? 'var(--pico-contrast)' : 'var(--pico-muted-color)';
+        }
+
+        function scheduleGraphRefresh() {
+            if (graphRefreshTimer !== null) {
+                return;
+            }
+
+            graphRefreshTimer = setTimeout(function() {
+                graphRefreshTimer = null;
+                loadStatsGraph();
+            }, 1000);
+        }
+
+        function loadStatsGraph() {
+            fetch('/api/stats/graph')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Stats API returned ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    const chartEl = document.getElementById('stats-chart');
+                    if (!chartEl) {
+                        throw new Error('Stats canvas not found');
+                    }
+                    const ctx = chartEl.getContext('2d');
+
+                    // Destroy existing chart if present
+                    if (statsChart) {
+                        statsChart.destroy();
+                    }
+
+                    // Create new Chart.js graph per UI-SPEC.md
+                    statsChart = new Chart(ctx, {
+                        type: 'line',
+                        data: data,
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: 'Attack Attempts'
+                                    }
+                                },
+                                x: {
+                                    title: {
+                                        display: true,
+                                        text: 'Time (Last 24 Hours)'
+                                    }
+                                }
+                            },
+                            plugins: {
+                                legend: {
+                                    display: false
+                                },
+                                title: {
+                                    display: true,
+                                    text: 'Attacks Over Time'
+                                }
+                            }
+                        }
+                    });
+
+                    setGraphStatus('');
+                })
+                .catch(error => {
+                    console.error('Failed to load stats graph:', error);
+                    // Keep canvas so future retries can recover.
+                    setGraphStatus('Failed to load statistics (will retry)');
+                });
+        }
+
+        // Load graph on page load and refresh every 60 seconds
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStatsGraph();
+            setInterval(loadStatsGraph, 60000);  // Refresh every minute
+        });
+
+        // Handle unblock button response
+        document.body.addEventListener('htmx:afterRequest', function(evt) {
+            if (evt.detail.xhr.responseURL.includes('/api/unblock/')) {
+                if (evt.detail.successful) {
+                    // Row already removed by hx-target, show success message
+                    console.log('IP unblocked successfully');
+
+                    // Refresh blocked IPs table
+                    htmx.trigger('#blocked-ips-container', 'refresh');
+                } else {
+                    // Show error
+                    const response = JSON.parse(evt.detail.xhr.response);
+                    alert('Failed to unblock IP: ' + response.error);
+                }
+            }
+        });
+    </script>
+</body>
+</html>

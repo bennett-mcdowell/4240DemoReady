@@ -1,0 +1,28 @@
+[Unit]
+Description=SSHBlock Dashboard Daemon - SSH Brute-Force Detection
+Documentation=file:///usr/share/doc/sshguard-dashboard/README.md
+After=network.target syslog.target
+Wants=sshguard-web.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -m sshguard_dashboard.daemon -c /etc/sshguard-dashboard/config.json
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Working directory
+WorkingDirectory=/var/lib/sshguard-dashboard
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
